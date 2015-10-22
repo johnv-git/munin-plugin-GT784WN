@@ -1,0 +1,557 @@
+#!/usr/bin/perl -w
+#
+# Copyright (c) 2015 John Vinopal
+# Licensed under the MIT license.
+#
+# MUNIN Plugin reporting statistics for the
+# ActionTec GT784WN ADSL Modem
+# http://www.actiontec.com/215.html
+# Tested against firmware version NCS01-1.0.12
+#
+# Requirements:
+#    Perl
+#    Bundle::LWP
+#
+# Usage:
+#    ln -s .../modem_stats_ /usr/local/etc/munin/plugins/modem_stats_(hostname)_(reporttype)
+#
+# Reports supported:
+#
+#    snr
+#    speed
+#    uptime
+#    retrains
+#    crcerrors
+#    wireless
+#    lan
+#    memory
+#    sessions
+#
+# Parameters supported:
+#
+#       config
+#       autoconf
+#
+# Magic markers:
+#%# family=auto
+#%# capabilities=autoconf
+
+use strict;
+use Munin::Plugin;
+my $lwp_loaded = 1;
+if (! eval "require LWP::UserAgent;") {
+    $lwp_loaded = undef;
+}
+
+my $proxy = $ENV{proxy}   || undef;   # Example: "http://proxy.foo.bar:8080/"
+
+my %reports = (
+    snr => {
+        url =>        "modemstatus_home.html",
+        function =>   \&fetchModemStatus,
+        title =>      "Modem SNR Statistics",
+        category =>   "modem",
+    },
+    speed => {
+        url =>        "modemstatus_home.html",
+        function =>   \&fetchModemStatus,
+        title =>      "Modem Speed Statistics",
+        category =>   "modem",
+    },
+    uptime => {
+        url =>        "modemstatus_home.html",
+        function =>   \&fetchModemStatus,
+        title =>      "Modem Uptime Statistics",
+        category =>   "system",
+    },
+    retrains => {
+        url =>        "modemstatus_home.html",
+        function =>   \&fetchModemStatus,
+        title =>      "Modem Retrain counter",
+        category =>   "system",
+    },
+    crcerrors => {
+        url =>        "modemstatus_home.html",
+        function =>   \&fetchModemStatus,
+        title =>      "Modem Error counter",
+        category =>   "modem",
+    },
+    wireless => {
+        url =>        "modemstatus_wirelessstatus.html",
+        function =>   \&fetchWirelessStatus,
+        title =>      "Wireless Network I/O",
+        category =>   "network",
+    },
+    lan => {
+        url =>        "modemstatus_lanstatus.html",
+        function =>   \&fetchLanStatus,
+        title =>      "Lan Network I/O",
+        category =>   "network",
+    },
+    memory => {
+        url =>        "modemstatus_modemutilization.html",
+        function =>   \&fetchUtilizationStatus,
+        title =>      "Modem Memory Use",
+        category =>   "system",
+    },
+    sessions => {
+        url =>        "modemstatus_modemutilization.html",
+        function =>    \&fetchUtilizationStatus,
+        title =>    "Modem Session Use",
+        category =>    "system",
+    },
+);
+
+# Parse the hostname and report from the filename.
+# XXX - neither hostname nor report can use underscores.
+# modem_stats_(hostname)_(reporttype)
+my ($host, $report) = $0 =~ /_([^_]+)_([^_]+)$/;
+
+# MUNIN AUTOCONFIGURATION
+if (defined $ARGV[0] and $ARGV[0] eq "autoconf") {
+    # Check for requirements.
+    my $ret = '';
+    if (! $lwp_loaded) {
+        $ret .= "Not found: LWP::UserAgent";
+    }
+    if (not exists $reports{$report}) {
+        $ret .= ", " if ($ret);
+        $ret .= "No such report: '$report'";
+    }
+    # Emit autoconf details.
+    if ($ret) {
+        print "no ($ret)\n";
+        exit 1;
+    }
+    print "yes\n";
+    exit 0;
+}
+
+# fail fast.
+die "unknown report: '$report'\n" if (not exists $reports{$report});
+
+# MUNIN CONFIG
+if (defined $ARGV[0] and $ARGV[0] eq 'config') {
+    print "graph_title $reports{$report}->{title}\n";
+    print "graph_args --base 1000 -l 0\n";
+    print "graph_category $reports{$report}->{category}\n";
+    print "graph_info This graph shows ", $reports{$report}->{title}, " from $host.\n";
+    print "host_name $host\n" unless $host eq 'localhost';
+    # Display configuration for the desired report.
+    &{$reports{$report}->{function}}($report, 'config');
+    exit 0;
+}
+
+# Produce data for the desired report.
+&{$reports{$report}->{function}}($report, '');
+exit 0;
+
+
+#########################################################################
+# REPORT CONFIG/DATA GENERATION
+#########################################################################
+
+#
+# URL: modemstatus_modemutilization.html
+#
+# The utilization status page includes data about:
+#    * memory
+#    * session - tcp, udp, modem, total
+#
+# The html page yields the following values:
+#
+# var total_mem = '59';     <== (MB)
+# var mem_usage = '53';     <== (% used)
+# var max_session_num = '4032';
+# var tcp_session = '12';
+# var udp_session = '13';
+# var tcp_sessions_num = '12';
+# var udp_sessions_num = '13';
+# var total_sessions = '25';
+# var modem_sessions = '0';
+#
+# Bugs:
+#    * the session variables don't seem to work correctly
+#        * tcp, udp seem to never change
+#        * modem is generally zero, but sometimes jumps around
+#    * memory leak?
+#        * mem_usage slowly crawls upwards over time
+#
+sub fetchUtilizationStatus {
+    die if (@_ != 2);
+    my $report = shift;
+    my $config = shift;
+
+    if ($config) {
+        if ($report eq "memory") {
+            print "graph_vlabel % In Use\n";
+            print "graph_scale no\n";
+            print "memory.label Memory Used\n";
+            print "memory.max 100\n";
+            print "memory.min 0\n";
+            print "memory.warning 80\n";
+            print "memory.critical 95\n";
+        } elsif ($report eq "sessions") {
+            print "graph_vlabel Sessions\n";
+            print "total_sessions.label Total Sessions\n";
+            print "total_sessions.min 0\n";
+            print "total_sessions.warning 2048\n";
+            print "total_sessions.critical 4096\n";
+            print "tcp_sessions.label TCP Sessions\n";
+            print "tcp_sessions.min 0\n";
+            print "udp_sessions.label UDP Sessions\n";
+            print "udp_sessions.min 0\n";
+            print "modem_sessions.label Modem Sessions\n";
+            print "modem_sessions.min 0\n";
+        } else {
+            die "unknown report: $report\n";
+        }
+        return;
+    }
+
+    # Extract the following variables.
+    my @jsvars = qw(total_mem mem_usage max_session_num tcp_session udp_session tcp_sessions_num udp_sessions_num total_sessions modem_sessions);
+    my $parser = sub {
+        my $html = shift;
+        my %jsvals = ();
+        foreach my $jsvar (@jsvars) {
+            my ($val) = $html =~ /var\s+$jsvar\s+=\s+'(\d+)'/;
+            $jsvals{$jsvar} = defined $val ? $val : 'U';
+        }
+        return %jsvals;
+    };
+
+    my %vals = fetchParsedData($report, $parser);
+
+    if ($report eq "memory") {
+        print "memory.value $vals{mem_usage}\n";
+    } elsif ($report eq "sessions") {
+        print "total_sessions.value $vals{total_sessions}\n";
+        print "tcp_sessions.value $vals{tcp_sessions_num}\n";
+        print "udp_sessions.value $vals{udp_sessions_num}\n";
+        print "modem_sessions.value $vals{modem_sessions}\n";
+    } else {
+        die "unknown report: $report\n";
+    }
+}
+
+
+#
+# URL: modemstatus_wirelessstatus.html
+#
+# The wireless status page includes data about:
+#    * wireless usage - wap0, wap1, wap2, wap3
+#
+# The html page yields the following values:
+#
+#    gv_apEnabled[0]  = "1";
+#    gv_ssid[0]       = "MyWAPName";
+#    gv_wlAuthMode[0] = "psk psk2";
+#    gv_wlWep[0]      = "disabled";
+#    gv_hide[0]       = "0";
+#    gv_FltMacMode[0] = "disabled";
+#    gv_pack_recv[0] = "635093";
+#    gv_pack_send[0] = "745373";
+#    gv_keybit[0]    = "0";
+#
+#    (repeats for 0..3)
+#
+# Bugs:
+#    * this code only displays a sum total of the 4 wap interfaces.
+#
+sub fetchWirelessStatus {
+    die if (@_ != 2);
+    my $report = shift;
+    my $config = shift;
+
+    # Extract the following variables.
+    my @jsvars = qw(gv_ssid[0] gv_pack_recv[0] gv_pack_send[0]
+            gv_ssid[1] gv_pack_recv[1] gv_pack_send[1]
+            gv_ssid[2] gv_pack_recv[2] gv_pack_send[2]
+            gv_ssid[3] gv_pack_recv[3] gv_pack_send[3]);
+    my $parser = sub {
+        my $html = shift;
+        my %jsvals = ();
+        foreach my $jsvar (@jsvars) {
+            my ($val) = $html =~ /\Q$jsvar\E\s+=\s+"(\d+)"/;
+            $jsvals{$jsvar} = defined $val ? $val : 'U';
+            # Aggregate the WAP ports.
+            if ($jsvar =~ /recv/) {
+                $jsvals{total_recv} += $val if defined $val;
+            } elsif ($jsvar =~ /send/) {
+                $jsvals{total_send} += $val if defined $val;
+            }
+        }
+        $jsvals{total_recv} = 'U' if not defined $jsvals{total_recv};
+        $jsvals{total_send} = 'U' if not defined $jsvals{total_send};
+        return %jsvals;
+    };
+
+    # Configuration.
+    if ($config) {
+        if ($report eq "wireless") {
+            print "graph_vlabel pps\n";
+
+            print "recv.label Recv\n";
+            print "recv.min 0\n";
+            print "recv.type DERIVE\n";
+
+            print "send.label Send\n";
+            print "send.min 0\n";
+            print "send.type DERIVE\n";
+        } else {
+            die "unknown report: $report\n";
+        }
+        return;
+    }
+
+    # Output total WAP usage.
+    my %vals = fetchParsedData($report, $parser);
+    print "recv.value $vals{total_recv}\n";
+    print "send.value $vals{total_send}\n";
+}
+
+#
+# URL: modemstatus_lanstatus.html
+#
+# The lan status page includes data about:
+#    * wired ports - eth0 eth1 eth2 eth3
+#
+# The html page yields the following values:
+#
+#    var eth0_status = 'NoLink/f8:e4:fc:a7:6d:1a/Auto/0/0';
+#    var eth1_status = 'NoLink/f8:e4:fc:a7:6d:1a/Auto/0/0';
+#    var eth2_status = 'NoLink/f8:e4:fc:a7:6d:1a/Auto/0/0';
+#    var eth3_status = 'Up/f8:e4:fc:a7:6d:1a/100M/33718123/32222363';
+#
+# Bugs:
+#    * this code only displays a sum total of the 4 lan interfaces.
+#
+sub fetchLanStatus {
+    die if (@_ != 2);
+    my $report = shift;
+    my $config = shift;
+
+    # Extract the following variables.
+    my @jsvars = qw(eth0_status eth1_status eth2_status eth3_status);
+    my $parser = sub {
+        my $html = shift;
+        my %jsvals = ();
+        foreach my $jsvar (@jsvars) {
+            my ($val) = $html =~ /var $jsvar\s+=\s+'([^']+)'/;
+            my @vals = split('/', $val);
+            # LAN ports.
+            $jsvals{$jsvar . '_send'} = $vals[3];
+            $jsvals{$jsvar . '_recv'} = $vals[4];
+
+            # Aggregate the LAN ports.
+            $jsvals{total_send} += $vals[3];
+            $jsvals{total_recv} += $vals[4];
+        }
+        return %jsvals;
+    };
+
+    # Configuration.
+    if ($config) {
+        if ($report eq "lan") {
+            print "graph_vlabel pps\n";
+
+            print "recv.label Recv\n";
+            print "recv.min 0\n";
+            print "recv.type DERIVE\n";
+
+            print "send.label Send\n";
+            print "send.min 0\n";
+            print "send.type DERIVE\n";
+        } else {
+            die "unknown report: $report\n";
+        }
+        return;
+    }
+
+    # Output total lan usage.
+    my %vals = fetchParsedData($report, $parser);
+    print "recv.value $vals{total_recv}\n";
+    print "send.value $vals{total_send}\n";
+}
+
+#
+# URL: modemstatus_home.html
+#
+# The modem status page includes data about:
+#    * uptime - days since last retrain
+#    * retrains - retrains since last reboot
+#    * speed - modem line speed: up/down speed
+#    * snr - modem line quality: up/down snr, up/down attenuation, up/down power
+#    * crcerrors - modem line errors: near/far crc, near/far fec
+#
+# The html page yields the following value:
+#
+# var dslstatus = 'Up|ATM|15000|1211|6/8|24/15|6|75386|3915/0|147/0|48/0|0/0|0/0|0/0|16634/0|114/0|0/0|110/0' ;
+#
+# This breaks down into the following values:
+#
+# status Up
+# layer ATM
+# speed_d 15000        <== (Kbps)
+# speed_u 1211        <== (Kbps)
+# snr_margin 6/8    <== (dB down / up)
+# attenuation 24/15    <== (dB down / up)
+# retrains 6
+# retrain_uptime 75386    <== (in seconds)
+# near_crc 3915/0    <== (interleave / fastpath)
+# far_crc 147/0        <== (interleave / fastpath)
+# near_crc_cnt 48/0    <== 30 minute near crc (interleave / fastpath)
+# far_crc_cnt 0/0    <== 30 minute far crc (interleave / fastpath)
+# near_rs 0/0        <== (interleave / fastpath)
+# far_rs 0/0        <== (interleave / fastpath)
+# near_fec 16634/0    <== 30 minute near fec (interleave / fastpath)
+# far_fec 114/0        <== 30 minute far fec (interleave / fastpath)
+# discards 0/0        <== 30 minute discards (down / up)
+# power 110/0        <== (dBm up / down)
+#
+# Bugs:
+#    * these names are reverse engineered frmo the html and might be misleading or incorrect.
+#    * this code only displays interleave values, not fastpath.
+#
+sub fetchModemStatus {
+    die if (@_ != 2);
+    my $report = shift;
+    my $config = shift;
+
+    # Extract the following variables.
+    my @jsvars = qw(status layer speed_d speed_u snr_margin_d snr_margin_u attenuation_d attenuation_u retrains retrain_uptime near_crc near_crc_f far_crc far_crc_f near_crc_cnt near_crc_cnt_f far_crc_cnt far_crc_cnt_f near_rs near_rs_f far_rs far_rs_f near_fec near_fec_f far_fec far_fec_f discards_u discards_d power_u power_d);
+
+    # Valid reports and variables for each.
+    my %report_vars = (
+        speed => {
+            vlabel    => 'Kbps',
+            vars    => [qw(speed_d speed_u)],
+            labels    => ['Down Speed', 'Up Speed'],
+        },
+        snr => {
+            vlabel    => 'dB',
+            vars    => [qw(snr_margin_d snr_margin_u attenuation_d attenuation_u power_d power_u)],
+            labels    => ['Down SNR', 'Up SNR', 'Down Attn.', 'Up Attn.', 'Down Power', 'Up Power'],
+        },
+        uptime => {
+            vlabel    => 'days',
+            scale    => 'no',
+            draw    => 'AREA',
+            vars    => [qw(retrain_uptime)],
+            labels    => ['Uptime'],
+        },
+        retrains => {
+            vlabel    => 'retrains',
+            scale    => 'no',
+            draw    => 'AREA',
+            vars    => [qw(retrains)],
+            labels    => ['Retrains'],
+        },
+        crcerrors => {
+            vlabel    => 'errors',
+            type    => 'DERIVE',
+            vars    => [qw(near_crc far_crc near_fec far_fec)],
+            labels    => ['Near CRC', 'Far CRC', 'Near FEC', 'Far FEC'],
+        },
+    );
+
+    # Fail fast.
+    die "unknown report: $report\n" if (not exists $report_vars{$report});
+
+    # Split dslstatus variable into fields.
+    # var dslstatus = 'Up|ATM|15003|1211|6/8|24/14|9|184665|4240/0|372/0|14/0|0/0|0/0|0/0|56387/0|273/0|0/0|111/0' ;
+    my $parser = sub {
+        my $html = shift;
+        my ($dslstatus) = $html =~ /var dslstatus = '([^']+)'/;
+        my @dslstats = split /[|\/]/, $dslstatus;
+
+        my %jsvals = ();
+        @jsvals{@jsvars} = @dslstats;
+
+        # Normalize power values.
+        $jsvals{power_u} /= 10;
+        $jsvals{power_d} /= 10;
+
+        # Normalize uptime in seconds => days.
+        $jsvals{retrain_uptime} = sprintf "%.03f", $jsvals{retrain_uptime} / 86400;
+
+        return %jsvals;
+    };
+
+    # Configuration
+    if ($config) {
+        print "graph_vlabel $report_vars{$report}->{vlabel}\n" if ($report_vars{$report}->{vlabel});
+        print "graph_scale $report_vars{$report}->{scale}\n" if ($report_vars{$report}->{scale});
+        for (my $i = 0; $i < @{$report_vars{$report}->{vars}}; $i++) {
+            $_ = $report_vars{$report}->{vars}->[$i];
+            print "$_.label $report_vars{$report}->{labels}->[$i]\n";
+            print "$_.min 0\n";
+            print "$_.draw $report_vars{$report}->{draw}\n" if ($report_vars{$report}->{draw});
+            print "$_.type $report_vars{$report}->{type}\n" if ($report_vars{$report}->{type});
+        }
+        return;
+    }
+
+    # Output values for report
+    my %vals = fetchParsedData($report, $parser);
+    foreach (@{$report_vars{$report}->{vars}}) {
+        print "$_.value $vals{$_}\n";
+    }
+}
+
+###################################################################
+# HTTP / CACHING
+###################################################################
+
+# Fetches an html page, parses it into a hash of variables, caches the hash.
+# Usage: fetchParsedData($report, &sub)
+sub fetchParsedData {
+    die if (@_ != 2);
+    my $report = shift;
+    my $parser = shift;
+
+    die "unknown report: $report\n" if (not exists $reports{$report});
+    my $page = $reports{$report}->{url};
+    die "bad url for report: $report\n" if (not defined $reports{$report}->{url});
+
+    my $url = "http://$host/$page";
+    my %state = restore_state();
+
+    # Check state cache.
+    if (exists $state{$url} && $state{"EXPIRES".$url} > time()) {
+        return split('###', $state{$url});
+    }
+
+    # Fetch from modem and parse into a hash.
+    my $content = fetchUrl($url);
+    my %vals = &{$parser}($content);
+
+    # Cache the hash for subsequent use.
+    $state{"EXPIRES".$url} = time()+60;
+    $state{$url} = join('###', %vals);
+    save_state(%state);
+
+    return %vals;
+}
+
+# Fetch a page from the modem.
+sub fetchUrl {
+    die if (@_ != 1);
+    my $url = shift;
+    my $ua = initLWP();
+    my $response = $ua->request(HTTP::Request->new('GET',$url));
+    my $content = $response->content;
+    return $content;
+}
+
+sub initLWP {
+    my $ua = LWP::UserAgent->new(timeout => 30);
+    $ua->agent('Munin');
+
+    # Use proxy, if defined.
+    if (defined($proxy)) {
+        $ua->proxy(['http'], $proxy);
+    }
+    return $ua;
+}
