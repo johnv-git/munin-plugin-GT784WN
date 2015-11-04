@@ -6,7 +6,9 @@
 # MUNIN Plugin reporting statistics for the
 # ActionTec GT784WN ADSL Modem
 # http://www.actiontec.com/215.html
-# Tested against firmware version NCS01-1.0.12
+# Tested against firmware versions:
+#    NCS01-1.0.13
+#    NCS01-1.0.12
 #
 # Requirements:
 #    Perl
