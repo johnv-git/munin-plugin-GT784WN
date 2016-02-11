@@ -47,6 +47,8 @@ if (! eval "require LWP::UserAgent;") {
 
 my $proxy = $ENV{proxy}   || undef;   # Example: "http://proxy.foo.bar:8080/"
 
+# The various modem reports this plugin knows about.
+# Specified in the filename as: modem_stats_HOSTNAME_REPORT
 my %reports = (
     snr => {
         url =>        "modemstatus_home.html",
@@ -98,9 +100,9 @@ my %reports = (
     },
     sessions => {
         url =>        "modemstatus_modemutilization.html",
-        function =>    \&fetchUtilizationStatus,
-        title =>    "Modem Session Use",
-        category =>    "system",
+        function =>   \&fetchUtilizationStatus,
+        title =>      "Modem Session Use",
+        category =>   "system",
     },
 );
 
@@ -130,6 +132,7 @@ if (defined $ARGV[0] and $ARGV[0] eq "autoconf") {
 }
 
 # fail fast.
+die "unknown modem hostname\n" if (not defined $host);
 die "unknown report: '$report'\n" if (not exists $reports{$report});
 
 # MUNIN CONFIG
@@ -341,15 +344,26 @@ sub fetchLanStatus {
         my %jsvals = ();
         foreach my $jsvar (@jsvars) {
             my ($val) = $html =~ /var $jsvar\s+=\s+'([^']+)'/;
-            my @vals = split('/', $val);
-            # LAN ports.
-            $jsvals{$jsvar . '_send'} = $vals[3];
-            $jsvals{$jsvar . '_recv'} = $vals[4];
+            if (defined $val) {
+                my @vals = split('/', $val);
+                # LAN ports.
+                $jsvals{$jsvar . '_send'} = $vals[3];
+                $jsvals{$jsvar . '_recv'} = $vals[4];
 
-            # Aggregate the LAN ports.
-            $jsvals{total_send} += $vals[3];
-            $jsvals{total_recv} += $vals[4];
+                # Aggregate the LAN ports.
+                $jsvals{total_send} += $vals[3];
+                $jsvals{total_recv} += $vals[4];
+            } else {
+                # Unknown on failure
+                $jsvals{$jsvar . '_send'} = 'U';
+                $jsvals{$jsvar . '_recv'} = 'U';
+            }
         }
+
+        # Unknown on failure
+        $jsvals{total_recv} = 'U' if not defined $jsvals{total_recv};
+        $jsvals{total_send} = 'U' if not defined $jsvals{total_send};
+
         return %jsvals;
     };
 
@@ -466,18 +480,24 @@ sub fetchModemStatus {
     my $parser = sub {
         my $html = shift;
         my ($dslstatus) = $html =~ /var dslstatus = '([^']+)'/;
-        my @dslstats = split /[|\/]/, $dslstatus;
-
         my %jsvals = ();
-        @jsvals{@jsvars} = @dslstats;
 
-        # Normalize power values.
-        $jsvals{power_u} /= 10;
-        $jsvals{power_d} /= 10;
+        if (defined $dslstatus) {
+            my @dslstats = split /[|\/]/, $dslstatus;
 
-        # Normalize uptime in seconds => days.
-        $jsvals{retrain_uptime} = sprintf "%.03f", $jsvals{retrain_uptime} / 86400;
+            @jsvals{@jsvars} = @dslstats;
 
+            # Normalize power values.
+            $jsvals{power_u} /= 10;
+            $jsvals{power_d} /= 10;
+
+            # Normalize uptime in seconds => days.
+            $jsvals{retrain_uptime} = sprintf "%.03f", $jsvals{retrain_uptime} / 86400;
+        } else {
+            # Unknown on failure.
+            @jsvals{@jsvars} = ('U') x @jsvars;
+        }
+ 
         return %jsvals;
     };
 
@@ -537,7 +557,8 @@ sub fetchParsedData {
     return %vals;
 }
 
-# Fetch a page from the modem.
+# Fetch a page from the modem webserver.
+# Usage: fetchUrl($url)
 sub fetchUrl {
     die if (@_ != 1);
     my $url = shift;
@@ -547,6 +568,8 @@ sub fetchUrl {
     return $content;
 }
 
+# Initialize and return a User Agent
+# Usage: initLWP()
 sub initLWP {
     my $ua = LWP::UserAgent->new(timeout => 30);
     $ua->agent('Munin');
