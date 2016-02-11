@@ -165,8 +165,8 @@ exit 0;
 #
 # The html page yields the following values:
 #
-# var total_mem = '59';     <== (MB)
-# var mem_usage = '53';     <== (% used)
+# var total_mem = '59';          <== (MB)
+# var mem_usage = '53';          <== (% used)
 # var max_session_num = '4032';
 # var tcp_session = '12';
 # var udp_session = '13';
@@ -410,21 +410,21 @@ sub fetchLanStatus {
 # status Up
 # layer ATM
 # speed_d 15000        <== (Kbps)
-# speed_u 1211        <== (Kbps)
-# snr_margin 6/8    <== (dB down / up)
+# speed_u 1211         <== (Kbps)
+# snr_margin 6/8       <== (dB down / up)
 # attenuation 24/15    <== (dB down / up)
 # retrains 6
-# retrain_uptime 75386    <== (in seconds)
-# near_crc 3915/0    <== (interleave / fastpath)
+# retrain_uptime 75386 <== (in seconds)
+# near_crc 3915/0      <== (interleave / fastpath)
 # far_crc 147/0        <== (interleave / fastpath)
 # near_crc_cnt 48/0    <== 30 minute near crc (interleave / fastpath)
-# far_crc_cnt 0/0    <== 30 minute far crc (interleave / fastpath)
-# near_rs 0/0        <== (interleave / fastpath)
-# far_rs 0/0        <== (interleave / fastpath)
-# near_fec 16634/0    <== 30 minute near fec (interleave / fastpath)
+# far_crc_cnt 0/0      <== 30 minute far crc (interleave / fastpath)
+# near_rs 0/0          <== (interleave / fastpath)
+# far_rs 0/0           <== (interleave / fastpath)
+# near_fec 16634/0     <== 30 minute near fec (interleave / fastpath)
 # far_fec 114/0        <== 30 minute far fec (interleave / fastpath)
-# discards 0/0        <== 30 minute discards (down / up)
-# power 110/0        <== (dBm up / down)
+# discards 0/0         <== 30 minute discards (down / up)
+# power 110/0          <== (dBm up / down)
 #
 # Bugs:
 #    * these names are reverse engineered frmo the html and might be misleading or incorrect.
@@ -441,34 +441,34 @@ sub fetchModemStatus {
     # Valid reports and variables for each.
     my %report_vars = (
         speed => {
-            vlabel    => 'Kbps',
-            vars    => [qw(speed_d speed_u)],
-            labels    => ['Down Speed', 'Up Speed'],
+            vlabel => 'Kbps',
+            vars =>   [qw(speed_d speed_u)],
+            labels => ['Down Speed', 'Up Speed'],
         },
         snr => {
-            vlabel    => 'dB',
-            vars    => [qw(snr_margin_d snr_margin_u attenuation_d attenuation_u power_d power_u)],
-            labels    => ['Down SNR', 'Up SNR', 'Down Attn.', 'Up Attn.', 'Down Power', 'Up Power'],
+            vlabel => 'dB',
+            vars =>   [qw(snr_margin_d snr_margin_u attenuation_d attenuation_u power_d power_u)],
+            labels => ['Down SNR', 'Up SNR', 'Down Attn.', 'Up Attn.', 'Down Power', 'Up Power'],
         },
         uptime => {
-            vlabel    => 'days',
-            scale    => 'no',
-            draw    => 'AREA',
-            vars    => [qw(retrain_uptime)],
-            labels    => ['Uptime'],
+            vlabel => 'days',
+            scale =>  'no',
+            draw =>   'AREA',
+            vars =>   [qw(retrain_uptime)],
+            labels => ['Uptime'],
         },
         retrains => {
-            vlabel    => 'retrains',
-            scale    => 'no',
-            draw    => 'AREA',
-            vars    => [qw(retrains)],
-            labels    => ['Retrains'],
+            vlabel => 'retrains',
+            scale =>  'no',
+            draw =>   'AREA',
+            vars =>   [qw(retrains)],
+            labels => ['Retrains'],
         },
         crcerrors => {
-            vlabel    => 'errors',
-            type    => 'DERIVE',
-            vars    => [qw(near_crc far_crc near_fec far_fec)],
-            labels    => ['Near CRC', 'Far CRC', 'Near FEC', 'Far FEC'],
+            vlabel => 'errors',
+            type =>   'DERIVE',
+            vars =>   [qw(near_crc far_crc near_fec far_fec)],
+            labels => ['Near CRC', 'Far CRC', 'Near FEC', 'Far FEC'],
         },
     );
 
